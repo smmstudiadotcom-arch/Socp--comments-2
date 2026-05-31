@@ -121,10 +121,13 @@ def sp_create_task(post_url):
         '2. Ваше имя в Вк</span></strong>'
     )
     
+    # Хвост из ссылки для названия (напр. wall426046437_1692)
+    tail = post_url.rstrip("/").split("/")[-1]
+    
     # Form data — точно как в cURL
     data = {
         'session': '',
-        'name': 'Написать   в  Вконтакте ',
+        'name': f'Написать   в  Вконтакте  {tail}',
         'url': 'https://vk.com/',
         'url_count': '',
         'type': 'social',
@@ -162,7 +165,7 @@ def sp_create_task(post_url):
         'ip_filter': 'all',
         'captcha_type': 'no',
         'ref_filter': '0',
-        'price_user': '2.5',
+        'price_user': '1',
         'auto_funds': '0',
     }
     
