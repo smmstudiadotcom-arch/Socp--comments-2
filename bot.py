@@ -24,6 +24,9 @@ VK_VERSION        = "5.131"
 # ══════════════════════════════════════
 SP_PAGE              = "smm.studia"       # VK страница для мониторинга
 SP_CHECK_INTERVAL    = 60                 # проверка каждую минуту
+SP_QTY_MIN           = 7                  # мин кол-во выполнений
+SP_QTY_MAX           = 14                 # макс кол-во выполнений
+SP_PRICE_PER_EXEC    = 1.3                # цена за 1 выполнение (с комиссией)
 
 # Cookies SocPublic (можно переопределить через env при желании)
 SP_SECRET     = os.environ.get("SP_SECRET",     "A4CBBC4D-1985-61D1-1705-2F9BBDDA8D6C")
@@ -201,11 +204,15 @@ def sp_create_task(post_url):
         )
         log("SP", f"📥 Status: {resp.status_code} | размер ответа: {len(resp.text)}")
         
-        # Успех: обычно 302 редирект на /account/task_view.html?id=NNNN
+        # Успех: 302 редирект на task_view.html?id=NNNN или task_adv_list
         if resp.status_code in (302, 303):
             location = resp.headers.get("Location", "")
             log("SP", f"✅ Задание создано! Redirect → {location}")
-            return True
+            # Пытаемся вытащить id из Location
+            m = re.search(r'id=(\d+)', location)
+            if m:
+                return m.group(1)
+            return "created"  # создано, но id не в редиректе — найдём в списке
         
         # 200 с возможной ошибкой
         if resp.status_code == 200:
@@ -214,10 +221,9 @@ def sp_create_task(post_url):
             
             if 'войти' in body_lower[:5000] or 'авторизац' in body_lower[:5000]:
                 log("SP", f"❌ Cookies устарели — обнови SP_SESSION_ID и SP_SECRET в Railway")
-                return False
+                return None
             
             # Ищем сообщения об ошибках в ответе
-            # SocPublic обычно показывает ошибки в блоках с классами alert/error/danger
             error_patterns = [
                 r'<div[^>]*class="[^"]*alert[^"]*"[^>]*>(.*?)</div>',
                 r'<div[^>]*class="[^"]*error[^"]*"[^>]*>(.*?)</div>',
@@ -238,13 +244,138 @@ def sp_create_task(post_url):
             else:
                 log("SP", f"⚠️  Status 200, но явных ошибок не найдено. Задание НЕ создано (вернулась форма).")
             
-            return False
+            return None
         
         log("SP", f"❌ Неожиданный статус: {resp.status_code}")
-        return False
+        return None
     except Exception as e:
         log("SP", f"❌ Ошибка: {e}")
+        return None
+
+def sp_cookies():
+    return {
+        'secret':     SP_SECRET,
+        'parent_id':  SP_PARENT_ID,
+        'session_id': SP_SESSION_ID,
+    }
+
+def sp_get_latest_task_id():
+    """Запрашивает список заданий и возвращает id самого верхнего (свежесозданного)."""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': 'https://socpublic.com/account/task_adv_list.html',
+    }
+    try:
+        resp = requests.get(
+            'https://socpublic.com/account/task_adv_list.html?task_type=&folder_id=0&page=1',
+            headers=headers, cookies=sp_cookies(), timeout=30,
+        )
+        if resp.status_code != 200:
+            log("SP", f"⚠️  Список заданий: status {resp.status_code}")
+            return None
+        # Ищем все id заданий в ссылках вида ...id=NNNNNNN
+        ids = re.findall(r'[?&]id=(\d+)', resp.text)
+        if not ids:
+            log("SP", f"⚠️  Не нашёл id заданий в списке")
+            return None
+        # Самый большой id = самое новое задание
+        latest = max(ids, key=lambda x: int(x))
+        return latest
+    except Exception as e:
+        log("SP", f"❌ Ошибка получения списка: {e}")
+        return None
+
+def sp_make_fund(task_id, quantity):
+    """Пополняет баланс задания. fund_value = quantity * цена."""
+    fund_value = round(quantity * SP_PRICE_PER_EXEC, 1)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Origin': 'https://socpublic.com',
+        'Referer': 'https://socpublic.com/account/task_adv_list.html',
+        'X-Requested-With': 'XMLHttpRequest',
+    }
+    data = {
+        'task_id': str(task_id),
+        'fund_value': str(fund_value),
+        'fund_action': 'credit',
+        'session': '',
+    }
+    try:
+        log("SP", f"💰 Пополняю задание {task_id} на {fund_value} руб ({quantity} вып.)")
+        resp = requests.post(
+            'https://socpublic.com/task.ajax?act=make_fund',
+            headers=headers, cookies=sp_cookies(), data=data, timeout=30,
+        )
+        log("SP", f"📥 Пополнение: status {resp.status_code} | {resp.text[:200]}")
+        if resp.status_code == 200:
+            return True
         return False
+    except Exception as e:
+        log("SP", f"❌ Ошибка пополнения: {e}")
+        return False
+
+def sp_start_task(task_id):
+    """Запускает задание (act=yes)."""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': 'https://socpublic.com/account/task_adv_list.html',
+    }
+    url = f'https://socpublic.com/account/task_adv_list.html?task_type=&act=yes&id={task_id}&page=1&folder_id=0&session='
+    try:
+        log("SP", f"▶️  Запускаю задание {task_id}")
+        resp = requests.get(
+            url, headers=headers, cookies=sp_cookies(), timeout=30, allow_redirects=False,
+        )
+        log("SP", f"📥 Старт: status {resp.status_code}")
+        # 302 = успешный редирект после старта
+        if resp.status_code in (200, 302, 303):
+            return True
+        return False
+    except Exception as e:
+        log("SP", f"❌ Ошибка старта: {e}")
+        return False
+
+def sp_full_pipeline(post_url):
+    """Полный цикл: создать → найти id → пополнить → запустить.
+    Возвращает True если задание успешно создано (даже если старт не удался)."""
+    # 1. Создать
+    result = sp_create_task(post_url)
+    if not result:
+        return False
+    
+    # 2. Определить task_id
+    if result.isdigit():
+        task_id = result
+    else:
+        # id не пришёл в редиректе — берём верхнее из списка
+        time.sleep(2)
+        task_id = sp_get_latest_task_id()
+        if not task_id:
+            log("SP", f"⚠️  Задание создано, но не смог определить task_id — пополни/запусти вручную")
+            return True  # создано, дальше вручную
+    
+    log("SP", f"🆔 task_id = {task_id}")
+    
+    # 3. Пополнить
+    quantity = random.randint(SP_QTY_MIN, SP_QTY_MAX)
+    time.sleep(2)
+    funded = sp_make_fund(task_id, quantity)
+    if not funded:
+        log("SP", f"⚠️  Пополнение не удалось — пополни/запусти задание {task_id} вручную")
+        return True
+    
+    # 4. Запустить
+    time.sleep(2)
+    started = sp_start_task(task_id)
+    if started:
+        log("SP", f"🎉 Задание {task_id} создано, пополнено ({quantity} вып.) и запущено!")
+    else:
+        log("SP", f"⚠️  Задание {task_id} пополнено, но старт не удался — запусти вручную")
+    return True
 
 # ══════════════════════════════════════
 #  ПОТОК SOCPUBLIC
@@ -275,7 +406,7 @@ def socpublic_bot():
             
             if latest_id != last_id:
                 log("SocPublic", f"🆕 Новый пост: {post_url}")
-                ok = sp_create_task(post_url)
+                ok = sp_full_pipeline(post_url)
                 if ok:
                     last_id = latest_id
                     save_state(state_file, last_id)
