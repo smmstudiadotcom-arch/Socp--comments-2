@@ -260,7 +260,8 @@ def sp_cookies():
     }
 
 def sp_get_latest_task_id():
-    """Запрашивает список заданий и возвращает id самого верхнего (свежесозданного)."""
+    """Запрашивает список заданий и возвращает id самого верхнего (свежесозданного).
+    Ищет id ТОЛЬКО в ссылках 'включить' (act=yes) — это надёжный паттерн."""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -274,13 +275,15 @@ def sp_get_latest_task_id():
         if resp.status_code != 200:
             log("SP", f"⚠️  Список заданий: status {resp.status_code}")
             return None
-        # Ищем все id заданий в ссылках вида ...id=NNNNNNN
-        ids = re.findall(r'[?&]id=(\d+)', resp.text)
+        # Ищем id ТОЛЬКО в ссылках "включить" (act=yes&id=NNN)
+        # Это кнопки запуска у неактивных заданий — именно они нам нужны
+        ids = re.findall(r'act=yes&id=(\d+)', resp.text)
         if not ids:
-            log("SP", f"⚠️  Не нашёл id заданий в списке")
+            log("SP", f"⚠️  Не нашёл заданий с кнопкой 'включить' (act=yes)")
             return None
         # Самый большой id = самое новое задание
         latest = max(ids, key=lambda x: int(x))
+        log("SP", f"🔍 Найдено заданий к запуску: {len(ids)}, новейшее id={latest}")
         return latest
     except Exception as e:
         log("SP", f"❌ Ошибка получения списка: {e}")
@@ -310,9 +313,21 @@ def sp_make_fund(task_id, quantity):
             headers=headers, cookies=sp_cookies(), data=data, timeout=30,
         )
         log("SP", f"📥 Пополнение: status {resp.status_code} | {resp.text[:200]}")
-        if resp.status_code == 200:
-            return True
-        return False
+        
+        if resp.status_code != 200:
+            return False
+        
+        # SocPublic отвечает 200 даже при ошибке — проверяем тело
+        # Успех: {"status":"success"...}, ошибка: {"status":"fail","text":"..."}
+        try:
+            j = resp.json()
+            if j.get("status") == "fail":
+                log("SP", f"❌ Пополнение отклонено: {j.get('text', 'неизвестно')}")
+                return False
+        except Exception:
+            pass  # не JSON — считаем по статусу
+        
+        return True
     except Exception as e:
         log("SP", f"❌ Ошибка пополнения: {e}")
         return False
@@ -359,6 +374,11 @@ def sp_full_pipeline(post_url):
             return True  # создано, дальше вручную
     
     log("SP", f"🆔 task_id = {task_id}")
+    
+    # ЗАЩИТА: task_id не должен совпадать с parent_id (это была бы ошибка парсинга)
+    if str(task_id) == str(SP_PARENT_ID):
+        log("SP", f"🛑 task_id совпал с parent_id ({SP_PARENT_ID}) — это ошибка! Пополни/запусти вручную")
+        return True
     
     # 3. Пополнить
     quantity = random.randint(SP_QTY_MIN, SP_QTY_MAX)
