@@ -124,8 +124,8 @@ def sp_create_task(post_url):
     # Form data — точно как в cURL
     data = {
         'session': '',
-        'name': f'Написать  в Вконтакте  ({post_url[-25:]})',  # уникальное имя
-        'url': post_url,
+        'name': 'Написать   в  Вконтакте ',
+        'url': 'https://vk.com/',
         'url_count': '',
         'type': 'comment',
         'description': description,
@@ -206,18 +206,38 @@ def sp_create_task(post_url):
         
         # 200 с возможной ошибкой
         if resp.status_code == 200:
-            body_lower = resp.text.lower()[:5000]
-            if 'войти' in body_lower or 'авторизация' in body_lower:
+            body = resp.text
+            body_lower = body.lower()
+            
+            if 'войти' in body_lower[:5000] or 'авторизац' in body_lower[:5000]:
                 log("SP", f"❌ Cookies устарели — обнови SP_SESSION_ID и SP_SECRET в Railway")
                 return False
-            # Возможно успех но без редиректа
-            log("SP", f"⚠️  Status 200 — задание возможно создано (проверь вручную)")
-            # Залогируем кусок ответа чтобы понять что вернулось
-            log("SP", f"📄 Начало ответа: {resp.text[:300]}")
+            
+            # Ищем сообщения об ошибках в ответе
+            # SocPublic обычно показывает ошибки в блоках с классами alert/error/danger
+            error_patterns = [
+                r'<div[^>]*class="[^"]*alert[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*error[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*danger[^"]*"[^>]*>(.*?)</div>',
+                r'<span[^>]*class="[^"]*error[^"]*"[^>]*>(.*?)</span>',
+                r'<li[^>]*class="[^"]*error[^"]*"[^>]*>(.*?)</li>',
+            ]
+            found_errors = []
+            for pat in error_patterns:
+                for m in re.finditer(pat, body, re.DOTALL | re.IGNORECASE):
+                    txt = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+                    txt = re.sub(r'\s+', ' ', txt)
+                    if txt and len(txt) > 2:
+                        found_errors.append(txt[:200])
+            
+            if found_errors:
+                log("SP", f"❌ Ошибки формы: {' | '.join(found_errors[:5])}")
+            else:
+                log("SP", f"⚠️  Status 200, но явных ошибок не найдено. Задание НЕ создано (вернулась форма).")
+            
             return False
         
         log("SP", f"❌ Неожиданный статус: {resp.status_code}")
-        log("SP", f"📄 Начало ответа: {resp.text[:300]}")
         return False
     except Exception as e:
         log("SP", f"❌ Ошибка: {e}")
