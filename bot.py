@@ -127,7 +127,7 @@ def sp_create_task(post_url):
         'name': 'Написать   в  Вконтакте ',
         'url': 'https://vk.com/',
         'url_count': '',
-        'type': 'comment',
+        'type': 'social',
         'description': description,
         'approve_type': 'hand',
         'approve_count': '1',
@@ -162,7 +162,7 @@ def sp_create_task(post_url):
         'ip_filter': 'all',
         'captcha_type': 'no',
         'ref_filter': '0',
-        'price_user': '1',
+        'price_user': '2.5',
         'auto_funds': '0',
     }
     
